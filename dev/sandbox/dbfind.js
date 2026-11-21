@@ -1,0 +1,2 @@
+// helper: find db object for a type id (EEUCLand / EEUCLandCitizen vtables)
+function findDb(t){ for(const vt of ['94 21 83 00','08 33 83 00']){ for(const r of Process.enumerateRanges('rw-')){ if(r.size>256*1024*1024)continue; let res=null; try{ for(const m of Memory.scanSync(r.base,r.size,vt)){ const a=m.address; if(a.and(3).toInt32())continue; try{ if(a.add(4).readU32()===1&&a.add(0x4b8).readU32()===t){res=a;break;} }catch(e){} } }catch(e){} if(res)return res; } } return null; }
