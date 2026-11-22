@@ -24,7 +24,7 @@ No game files are included; the program patches your own installation, keeps bac
 | Art of Conquest start fix | AoC starts again when a mod put loose db files into the Empire Earth folder | copies in `AoC\Data\db` |
 | Graphics settings (dgVoodoo) | Native resolution, 8x antialiasing, 16x anisotropic filtering, no "always on top" | `dgVoodoo.conf` |
 | Cheat executable | Second exe: cheat codes also in campaigns, new codes `citizens [1-50]`, `doughboys [1-50]`; single player only | `EE-Cheats.exe`, `EE-AOC-Cheats.exe` (new) |
-| Long line as default formation | New single player games start with "long line" instead of "short line" | cheat executable |
+| Long line as default formation | Single player games use "long line" instead of "short line" (new games, loaded games, hotkey groups) | cheat executable |
 | More units on screen | The game draws at most 512 objects per frame - units disappear in big battles. Raised to 4096 | cheat executable or original executable |
 | First-person mode | Control one ranged unit like in a shooter. **Unfinished experiment, no longer developed** - continue it if you like | `ee_fps.dll` (Empire Earth only) |
 
@@ -42,8 +42,11 @@ Tested with NeoEE v2.0.0.5 (Setup v1.7.2) on Windows 11.
   first and lets single player sessions bind the port the original way.
 - **AoC does not start:** AoC also reads the base game's data folder, so a loose EE-format `dbtechtree.dat`
   of a mod wins against AoC's own file. The fix puts AoC's own versions into its own folder.
-- **Default formation:** at the end of the human player constructor the game does what the "long line" button
-  does (single player only, computer players untouched).
+- **Default formation:** a player owns three selection groups (the one orders use, the one the interface
+  shows, a spare one) and 20 hotkey groups, each with its own formation object ("short line" from the group
+  constructor). At the end of the human player constructor all of them get "long line"; `EEGroup::Read`
+  (loading a game) turns a saved "short line" into "long line" and copies the loaded formation to the
+  interface group. Single player only, computer players untouched.
 
 Every patcher finds its places by signature, refuses unknown files, writes a patch record next to the file
 and can undo exactly its own bytes. Details of the investigation (German, chronological): `docs/MODLOG.de.md`.

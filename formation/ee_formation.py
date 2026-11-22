@@ -1,9 +1,15 @@
 """Empire Earth / Art of Conquest: new single player games start with the formation "long line".
 
-Normally every player starts with "short line" (formation kind 0).  This patch makes the game do, at the
-end of the EEHumanPlayer constructor, exactly what the "long line" button does (EEMChangeFormation::Execute
-with kind 1) - for human players and in single player sessions only.  Computer players and network games
-keep the original default, so nothing can get out of sync.  Saved games keep whatever was saved.
+Normally every player starts with "short line" (formation kind 0).  This patch gives every group of a human
+player the formation "long line" (kind 1) - in single player sessions only.  Computer players and network
+games keep the original default, so nothing can get out of sync.
+
+Two hooks:
+  * end of the EEHumanPlayer constructors: the three selection groups (the one the orders use, the one the
+    interface shows, a spare one) and the 20 hotkey groups get "long line".
+  * EEGroup::Read (loading / restarting a game): a group saved with "short line" becomes "long line"; any
+    other saved formation is kept, and the interface group follows the loaded one (the original shows
+    "short line" after loading no matter what was saved).
 
 It is an add-on for the cheat executable built by ee_cheat.py (same code cave area in the PE header).
 
@@ -19,8 +25,11 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'cheat'))
 import ee_cheat                                                           # noqa: E402
 
-MARK = b'EEFORM2\0'
-OLD_MARKS = [b'EEFORM1\0']      # v1 only set the internal group (+0x9BC) - the interface kept "short line"
+MARK = b'EEFORM3\0'
+# v1 only set the internal group (+0x9BC) - the interface kept "short line"; v2 missed loaded games and the
+# hotkey groups (the display said "long line", the units formed a short line)
+OLD_MARKS = [b'EEFORM1\0', b'EEFORM2\0']
+HOTKEYS = 20        # hotkey groups per player
 KIND = 1            # 0 short line, 1 long line, 2 loose line, 3 staggered line, 4 wedge, 5 blunt wedge, 6 / 7 circle
 
 
@@ -53,7 +62,30 @@ def locate(pe):
     if len(ms) != 1:
         raise RuntimeError('formation button handler: %d matches (expected 1)' % len(ms))
     L['selgroup'] = struct.unpack('<I', ms[0].group(3))[0]
+    # EEGroup constructor: player pointer and formation of a group
+    m = re.compile(rb'\x8B\x45\x08\x6A\x00\xC7\x06....\x89\x46(.)\xE8(....)\x83\x66.\x00\x89\x46(.)', re.S).search(d)
+    if not m or pe.va(m.start(2)) + 4 + struct.unpack('<i', m.group(2))[0] != L['factory']:
+        raise RuntimeError('EEGroup constructor looks different')
+    L['g_player'], L['g_form'] = m.group(1)[0], m.group(3)[0]
+    # the 20 hotkey groups (the "assign group" message) and the spare selection group (allocated right before them)
+    ms = list(re.finditer(rb'\x0F\xB6\x47\x10\xFF\x36\x8B\x8C\x83(....)', d, re.S))
+    if len(ms) != 1:
+        raise RuntimeError('hotkey group handler: %d matches (expected 1)' % len(ms))
+    L['hot'] = struct.unpack('<I', ms[0].group(1))[0]
+    m = re.compile(rb'\x8D\x86' + re.escape(u32(L['hot'])) + rb'\x89\xBE(....)\x33\xFF', re.S).search(d)
+    if not m:
+        raise RuntimeError('player group setup looks different')
+    third = struct.unpack('<I', m.group(1))[0]
+    if not (L['selgroup'] == L['group'] + 4 and third == L['group'] + 8 and L['hot'] + HOTKEYS * 4 <= L['group']):
+        raise RuntimeError('unexpected group layout')
+    # EEGroup::Read: "if (kind != 8) formation = CreateFormation(kind)"
+    rx = re.compile(rb'\x83\x7D\xFC\x08\x74.\xFF\x75\xFC\xE8(....)\x8B\xD8\x85\xDB\x59\x74.\x8B\x4F' + bytes([L['g_form']]), re.S)
+    ms = [m for m in rx.finditer(d) if pe.va(m.start(1)) + 4 + struct.unpack('<i', m.group(1))[0] == L['factory']]
+    if len(ms) != 1:
+        raise RuntimeError('EEGroup::Read: %d matches (expected 1)' % len(ms))
+    L['read_call'] = ms[0].start(1) - 1                                        # file offset of the E8
     vt = pe.rtti_vtable('EEHumanPlayer')
+    L['human_vt'] = vt
     hooks = []
     for c in re.finditer(re.escape(b'\xC7\x06' + u32(vt)), d):                 # mov dword [esi], vtable  (2 ctors + dtor)
         t = re.compile(rb'\x89\x86(....)\x5F\x8B\xC6\x5E', re.S).search(d, c.end(), c.end() + 0x40)
@@ -66,45 +98,85 @@ def locate(pe):
 
 
 def build_cave(L, org, comm, mp_off, displaced):
+    """-> (bytes, entry of the constructor hook, entry of the EEGroup::Read hook)"""
     a = ee_cheat.Asm(org)
     a.raw(MARK)
+
+    def single_player(label):                                # falls through in a single player session
+        a.emit('A1', comm)                                   # mov eax, [comm]
+        a.emit('85 C0')                                      # test eax, eax
+        a.j8(0x74, label)
+        a.emit('80 78').raw(bytes([mp_off, 0]))              # cmp byte [eax+mp], 0
+        a.j8(0x75, label)                                    # network game: keep the original default
+
+    # --- set_range: edi = first group pointer, ebp = count, ebx = formation
+    a.label('set_range')
+    set_range = a.here
+    a.emit('8B 0F')                                          # mov ecx, [edi]
+    a.emit('85 C9')                                          # test ecx, ecx
+    a.j8(0x74, 'sr_next')
+    a.emit('53')                                             # push ebx
+    a.rel32(0xE8, L['setform'])                              # call EEGroup::SetFormation
+    a.label('sr_next')
+    a.emit('83 C7 04')                                       # add edi, 4
+    a.emit('4D')                                             # dec ebp
+    a.j8(0x75, 'set_range')
+    a.emit('C3')                                             # ret
+
+    # --- end of the EEHumanPlayer constructors (esi = player)
     entry = a.here
     a.raw(displaced)                                         # mov [esi+X], eax          (the instruction the hook replaced)
     a.emit('60')                                             # pushad
-    a.emit('A1', comm)                                       # mov eax, [comm]
-    a.emit('85 C0')                                          # test eax, eax
-    a.j8(0x74, 'done')
-    a.emit('80 78').raw(bytes([mp_off, 0]))                  # cmp byte [eax+mp], 0
-    a.j8(0x75, 'done')                                       # network game: keep the original default
-    a.emit('8B BE', L['group'])                              # mov edi, [esi+group]
-    a.emit('85 FF')                                          # test edi, edi
-    a.j8(0x74, 'done')
+    single_player('done')
     a.raw(bytes([0x6A, KIND]))                               # push kind
     a.rel32(0xE8, L['factory'])                              # call CreateFormation
     a.emit('59')                                             # pop ecx
     a.emit('85 C0')                                          # test eax, eax
     a.j8(0x74, 'done')
     a.emit('8B D8')                                          # mov ebx, eax
-    a.emit('53 8B CF')                                       # push ebx / mov ecx, edi
-    a.rel32(0xE8, L['setform'])                              # call EEGroup::SetFormation
-    a.emit('8B 4F').raw(bytes([L['sub_off']]))               # mov ecx, [edi+3Ch]
-    a.emit('85 C9')                                          # test ecx, ecx
-    a.j8(0x74, 'skip')
-    a.emit('53')                                             # push ebx
-    a.rel32(0xE8, L['setform'])                              # call EEGroup::SetFormation
-    a.label('skip')
-    a.emit('8B 8E', L['selgroup'])                           # mov ecx, [esi+selection group]   (what the interface uses)
-    a.emit('85 C9')                                          # test ecx, ecx
-    a.j8(0x74, 'skip2')
-    a.emit('53')                                             # push ebx
-    a.rel32(0xE8, L['setform'])                              # call EEGroup::SetFormation
-    a.label('skip2')
+    a.emit('8D BE', L['hot'])                                # lea edi, [esi+hotkey groups]
+    a.raw(bytes([0x6A, HOTKEYS, 0x5D]))                      # push 20 / pop ebp
+    a.rel32(0xE8, set_range)
+    a.emit('8D BE', L['group'])                              # lea edi, [esi+selection groups]   (orders, interface, spare)
+    a.raw(bytes([0x6A, 3, 0x5D]))                            # push 3 / pop ebp
+    a.rel32(0xE8, set_range)
     a.emit('8B CB')                                          # mov ecx, ebx
     a.emit('FF 15', L['deref_iat'])                          # call [UReferenceCounter::Dereference]
     a.label('done')
     a.emit('61')                                             # popad
     a.emit('C3')                                             # ret
-    return a.finish(), entry
+
+    # --- EEGroup::Read, in place of "call CreateFormation" ([esp+4] = saved kind, edi = group)
+    read_entry = a.here
+    single_player('r_orig')
+    a.emit('8B 57').raw(bytes([L['g_player']]))              # mov edx, [edi+player]
+    a.emit('85 D2')                                          # test edx, edx
+    a.j8(0x74, 'r_orig')
+    a.emit('81 3A', L['human_vt'])                           # cmp dword [edx], EEHumanPlayer vtable
+    a.j8(0x75, 'r_orig')
+    a.emit('83 7C 24 04 00')                                 # cmp dword [esp+4], 0      (short line = the old default)
+    a.j8(0x75, 'r_keep')
+    a.emit('C7 44 24 04', KIND)                              # mov dword [esp+4], kind
+    a.label('r_keep')
+    a.emit('FF 74 24 04')                                    # push dword [esp+4]
+    a.rel32(0xE8, L['factory'])                              # call CreateFormation
+    a.emit('59')                                             # pop ecx
+    a.emit('85 C0')                                          # test eax, eax
+    a.j8(0x74, 'r_out')
+    a.emit('8B 57').raw(bytes([L['g_player']]))              # mov edx, [edi+player]
+    a.emit('3B BA', L['group'])                              # cmp edi, [edx+order group]
+    a.j8(0x75, 'r_out')
+    a.emit('8B 8A', L['selgroup'])                           # mov ecx, [edx+interface group]
+    a.emit('85 C9')                                          # test ecx, ecx
+    a.j8(0x74, 'r_out')
+    a.emit('50 50')                                          # push eax (keep) / push eax (argument)
+    a.rel32(0xE8, L['setform'])                              # call EEGroup::SetFormation   -> the interface shows what was loaded
+    a.emit('58')                                             # pop eax
+    a.label('r_out')
+    a.emit('C3')                                             # ret
+    a.label('r_orig')
+    a.rel32(0xE9, L['factory'])                              # jmp CreateFormation
+    return a.finish(), entry, read_entry
 
 
 def is_installed(data):
@@ -124,13 +196,15 @@ def apply(data, comm, mp_off):
     displaced = L['hooks'][0][1]
     if any(h[1] != displaced for h in L['hooks']):
         raise RuntimeError('the two constructors differ')
-    cave, entry = build_cave(L, pe.base + cave_off, comm, mp_off, displaced)
+    cave, entry, read_entry = build_cave(L, pe.base + cave_off, comm, mp_off, displaced)
     if cave_off + len(cave) > pe.size_of_headers:
         raise RuntimeError('no room in the PE header')
     pe.d[cave_off:cave_off + len(cave)] = cave
     for off, _ in L['hooks']:
         at = pe.va(off)
         pe.d[off:off + 6] = b'\xE8' + struct.pack('<i', entry - (at + 5)) + b'\x90'      # call cave / nop
+    off = L['read_call']
+    pe.d[off + 1:off + 5] = struct.pack('<i', read_entry - (pe.va(off) + 5))             # call CreateFormation -> call cave
     return bytes(pe.d)
 
 

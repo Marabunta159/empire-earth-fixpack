@@ -35,8 +35,10 @@ Cheat executable (single player)
     A second game exe next to the original one. Built-in cheat codes also work in campaigns and
     scenarios; new codes "citizens [1-50]" and "doughboys [1-50]". Network games are not affected.
 Long line as default formation
-    New single player games start with the formation "long line" instead of "short line" (cheat
-    executable). Computer players, network games and saved games are not affected.
+    Single player games use the formation "long line" instead of "short line" (cheat executable),
+    also for the groups on the number keys. A game saved with "short line" continues with "long
+    line"; any other saved formation is kept and shown correctly after loading. Computer players
+    and network games are not affected.
 More units on screen - cheat executable / original game
     The game can draw only 512 objects per frame; in big battles units disappear. The limit is
     raised to 4096. Two entries: one for the cheat executable, one for the normal game executable.
@@ -56,6 +58,10 @@ Good to know
   "More info" and "Run anyway". Some virus scanners are suspicious of small unsigned programs that
   modify other programs; the complete source code is inside ("Source code...") if you want to check.
 - After a NeoEE update or reinstall just start the program again and apply the fixes again.
+- Updates: at start the program asks GitHub once whether a newer version exists and shows a line
+  with the download link if so. Nothing else is sent, nothing is downloaded or installed by itself
+  (switch it off with the command line option --no-update-check). After downloading a new version,
+  start it and press "Apply changes" - entries marked "update available" are rebuilt.
 - After installing another Empire Earth mod, start the program again: the "Art of Conquest start
   fix" may be offered then.
 - Frame rate with very many units: every unit costs drawing time. Measured at 2560x1440:

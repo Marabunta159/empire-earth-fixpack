@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BUILD = os.path.join(ROOT, 'build', 'fixpack')
 sys.path.insert(0, HERE)
-VERSION = '1.0'
+VERSION = '1.1'
 
 SOURCES = [                                 # (file in the project, name in the source zip)
     ('fixpack/ee_fixpack.py', 'fixpack/ee_fixpack.py'),
@@ -60,7 +60,7 @@ Everything the installer does is in these files. Python 3.8+ is enough to run th
   aoc/aoc_dbshadow.py       Art of Conquest start fix (uses ssa_unpack.py to read data.ssa)
   cheat/ee_cheat.py         builds the cheat executable
   unitcap/ee_unitcap.py     512 -> 4096 objects per frame
-  formation/ee_formation.py "long line" as the default formation of new single player games (cheat exe)
+  formation/ee_formation.py "long line" as the default formation in single player games (cheat exe)
   fps/src/ee_fps.cpp        first-person mode (C++, 32 bit, build with fps/src/build.cmd / MSVC)
 
 Each patcher also works alone on the command line:  python <file> status | install | uninstall  (see -h).

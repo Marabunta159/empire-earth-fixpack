@@ -12,6 +12,10 @@ silent use):
   --report FILE             write the states (and the log of --apply) as JSON
   --exit                    close when done        --no-elevate   never ask for administrator rights
   --no-shortcuts            neither create nor remove desktop shortcuts
+  --no-update-check         do not ask GitHub whether a newer version exists
+
+At start the window asks GitHub once for the tag of the latest release (nothing but that request is sent) and
+shows a line with a download link when it is newer than this program.  Unattended runs (--exit) never ask.
 """
 import argparse
 import ctypes
@@ -28,8 +32,10 @@ import traceback
 import webbrowser
 
 APP = 'Empire Earth Fix Pack'
-VERSION = '1.0'
+VERSION = '1.1'
 REPO_URL = 'https://github.com/Marabunta159/empire-earth-fixpack'
+LATEST_API = 'https://api.github.com/repos/Marabunta159/empire-earth-fixpack/releases/latest'
+DOWNLOAD_URL = REPO_URL + '/releases/latest'
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FROZEN = getattr(sys, 'frozen', False)
@@ -113,11 +119,13 @@ COMPONENTS = [
      'Type the codes into the chat line (Enter). Single player only - in network games nothing changes.',
      ('ee', 'aoc'), None, False),
     ('formation', 'Long line as default formation',
-     'New single player games start with the formation "long line" instead of "short line".',
-     'Every game starts with the formation "short line". With this entry a new single player game starts with '
-     '"long line" for you - exactly as if you had pressed the formation button right at the start. You can still '
-     'choose any other formation in the game.\n\n'
-     'Computer players and network games are not affected; saved games keep the formation that was saved.\n\n'
+     'Single player games start with the formation "long line" instead of "short line".',
+     'Every game starts with the formation "short line". With this entry your units use "long line" in single '
+     'player games - exactly as if you had pressed the formation button right at the start. It also applies to '
+     'the groups you store on the number keys. You can still choose any other formation in the game.\n\n'
+     'Loading a game: a game that was saved with "short line" continues with "long line"; any other formation you '
+     'had chosen is kept, and the formation buttons now show it correctly after loading.\n\n'
+     'Computer players and network games are not affected.\n\n'
      'This entry patches the cheat executable (needs "Cheat executable").',
      ('ee', 'aoc'), 'cheats', False),
     ('units_cheat', 'More units on screen - cheat executable',
@@ -705,7 +713,7 @@ class Pack:
         return rc
 
     def in_formation(self, g):
-        return self._addon(g, 0, True, 'new single player games start with the formation "long line"')
+        return self._addon(g, 0, True, 'single player games use the formation "long line"')
 
     def un_formation(self, g):
         return self._addon(g, 0, False, 'default formation is "short line" again')
@@ -891,6 +899,10 @@ def run_gui(args, dirs, neo_name):
     ttk.Label(outer, style='Gray.TLabel',
               text='Fixes for the NeoEE version of Empire Earth and The Art of Conquest. Tick what you want, then press '
                    '"Apply changes". Untick to remove.' + ('   Detected: ' + neo_name if neo_name else '')).pack(anchor='w', pady=(0, 6))
+    # line that appears when GitHub has a newer release (see check_update below)
+    update_line = tk.Label(outer, text='', fg='#ffffff', bg='#b35900', cursor='hand2', font=('Segoe UI', 9, 'bold'), padx=8, pady=3)
+    update_line.bind('<Button-1>', lambda _e: webbrowser.open(DOWNLOAD_URL))
+    Tip(update_line, 'Opens the download page: ' + DOWNLOAD_URL.replace('https://', ''))
 
     # --- folders
     ff = ttk.LabelFrame(outer, text='Game folders', padding=(8, 2, 8, 6))
@@ -1067,8 +1079,27 @@ def run_gui(args, dirs, neo_name):
                             '- No game files are included; only your own installation is patched.\n'
                             '- The source code of all fixes is included ("Source code..."). The first-person mode is an\n'
                             '  unfinished experiment that is no longer developed - feel free to continue it.\n\n'
+                            '- At start the program asks GitHub once whether a newer version exists. Nothing else is\n'
+                            '  sent, and nothing is downloaded or installed by itself.\n\n'
                             'Tested with NeoEE v2.0.0.5.\n\n'
                             'Source code, updates and more Empire Earth mods:\n%s' % (APP, VERSION, BACKUPS, REPO_URL), parent=root)
+
+    def check_update():
+        """ask GitHub in the background; show the orange line when a newer release exists"""
+        found = []
+        threading.Thread(target=lambda: found.append(newer_release(args.pretend_version)), daemon=True).start()
+
+        def poll(left=40):
+            if not found:
+                if left:
+                    root.after(250, lambda: poll(left - 1))
+                return
+            if found[0]:
+                update_line.config(text='Version %s is available (you have %s) - click here to download it' % (
+                    found[0], args.pretend_version or VERSION))
+                update_line.pack(fill='x', pady=(0, 6), before=ff)
+                say('A newer version is available: %s  ->  %s' % (found[0], DOWNLOAD_URL))
+        poll()
 
     def save_source():
         src = os.path.join(RES, 'fixpack', 'EE-FixPack-source.zip')
@@ -1176,6 +1207,8 @@ def run_gui(args, dirs, neo_name):
     if args.select:
         select(args.select)
     pump()
+    if not args.no_update_check and (not args.exit or args.pretend_version):
+        check_update()
     if args.apply:
         root.after(300, lambda: start_apply(None) if pending() else (args.report and write_report(args.report, st['pack'], st['loglines'], 0),
                                                                     args.exit and root.destroy()))
@@ -1183,6 +1216,29 @@ def run_gui(args, dirs, neo_name):
         root.after(1500, lambda: (args.report and write_report(args.report, st['pack'], st['loglines'], 0), root.destroy()))
     root.mainloop()
     return st['failed'] or 0
+
+
+def version_tuple(text):
+    """'v1.10' -> (1, 10); anything that is not a dotted number -> ()"""
+    out = []
+    for part in str(text).strip().lstrip('vV').split('.'):
+        if not part.isdigit():
+            return ()
+        out.append(int(part))
+    return tuple(out)
+
+
+def newer_release(current=None, timeout=6):
+    """tag of the latest GitHub release when it is newer than this program, else None (also when offline)"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(LATEST_API, headers={'User-Agent': 'EE-FixPack', 'Accept': 'application/vnd.github+json'})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            tag = str(json.loads(r.read(200000).decode('utf-8', 'replace')).get('tag_name', ''))[:20]
+    except Exception:
+        return None
+    new, cur = version_tuple(tag), version_tuple(current or VERSION)
+    return tag.lstrip('vV') if new and cur and new > cur else None
 
 
 def write_report(path, pack, loglines, failed):
@@ -1221,6 +1277,8 @@ def main():
     ap.add_argument('--no-elevate', action='store_true')
     ap.add_argument('--no-shortcuts', action='store_true')
     ap.add_argument('--compact', action='store_true', help='one line per fix (automatic on small screens)')
+    ap.add_argument('--no-update-check', action='store_true')
+    ap.add_argument('--pretend-version', help=argparse.SUPPRESS)                         # test the update line: act as this version
     ap.add_argument('--elevated', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--test-relaunch', action='store_true', help=argparse.SUPPRESS)      # exercise the relaunch path
     args = ap.parse_args()

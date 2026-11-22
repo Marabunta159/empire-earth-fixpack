@@ -660,5 +660,36 @@ crash EE: installiert | fog EE: bereits behoben (Cave-Variante) | cheats EE + fp
 
 ### Veroeffentlicht (21.11.2026)
 - `github.com/Marabunta159/empire-earth-fixpack` (oeffentlich), Release `v1.0` mit `EE-FixPack.exe` + Readme.
-- Portmaster laesst `git.exe` nicht ins Netz, `gh.exe` schon -> Upload mit `python gh_push.py <repo> Marabunta159/empire-earth-fixpack`
-  (Git-Data-API: gleicher Baum, ein Commit ohne Eltern, Branch per force). Aktualisieren: `make_repo.py`, lokal committen, `gh_push.py` erneut.
+
+### Korrektur Standardformation (22.11.2026)
+- Nutzer: neue AoC-Zufallskarte startete trotzdem mit "Kurze Reihe". Live gelesen: interne Gruppe `+0x9BC` (AoC `+0x9AC`) = LongLine, aber die Gruppe der Oberflaeche `+0x9C0` (AoC `+0x9B0`, die setzt der Formationsknopf direkt) = ShortLine. Mein Sandbox-Test hatte nur die erste geprueft.
+- `ee_formation.py` v2 (Marker `EEFORM2`): setzt zusaetzlich die Oberflaechen-Gruppe; Offset per Signatur aus dem Knopf-Handler. Sandbox EE + AoC: Mensch intern + Oberflaeche LongLine, Computer ShortLine.
+- GUI erkennt Cheat-EXEs der Vorversion (Marker / Patch-Record) als "update available" und baut sie mit denselben Zusaetzen neu. EXE im Release v1.0 ersetzt.
+
+### Standardformation v3 + Update-Pruefung (22.11.2026, nachmittags)
+- Nutzer: Anzeige "Lange Reihe", die Einheiten bilden trotzdem die kurze Reihe. Laufendes Spiel nur gelesen
+  (`cheat/peek_form.py <pid> ee|aoc`, ReadProcessMemory, keine Injektion): Spieler 0 intern ShortLine / Oberflaeche
+  LongLine, alle 20 Hotkey-Gruppen ShortLine, die aeltesten `EEActiveGroup` (= laufende Bewegungen, Vektor
+  `Spieler+0x844`) ShortLine, die neueren LongLine. In der Sandbox (neue Zufallskarte) sind dagegen beide Gruppen
+  LongLine -> das Spiel des Nutzers war geladen (`Start.ees` / AutoSave im Spielordner).
+- Ursache: `EEGroup::Read` (EE `0x5F667D`, AoC Aufruf bei `0x606516`) liest beim Laden die Formationsart und ersetzt
+  die Formation der Befehlsgruppe; die Oberflaechen-Gruppe steht nicht im Spielstand und behielt den Wert des
+  Konstruktor-Hooks. Bewegungen nehmen die Formation der Befehlsgruppe `+0x9BC` (Handler `0x4B3958` ->
+  `0x5DD18B` kopiert sie in die neue `EEActiveGroup`).
+- Aufbau: je Spieler 3 x `EESelectedGroup` (`+0x9BC` Befehle, `+0x9C0` Oberflaeche, `+0x9C4` ungenutzt) und
+  20 Hotkey-Gruppen (`+0x964`, AoC `+0x954`). Hotkey abrufen = `Befehlsgruppe.CopyFrom(Hotkey-Gruppe)` inkl.
+  Formation (`0x5F93B0`) - eine nie belegte Zifferntaste setzte also "Kurze Reihe".
+  Linienformationen: Basis `0x4D78E8(Art, Abstand, Abstand, Spalten, Reihen)`, kurz = 5 Spalten, lang = 10.
+- `ee_formation.py` v3 (Marker `EEFORM3`): Konstruktor-Hook setzt alle 23 Gruppen; neuer Hook in `EEGroup::Read`
+  (statt `call CreateFormation`): Einzelspieler + Gruppe eines `EEHumanPlayer` -> Art 0 wird 1, andere Arten bleiben,
+  und die Oberflaechen-Gruppe bekommt die geladene Formation (das Original zeigt nach dem Laden immer "Kurze Reihe").
+- GUI 1.1: fragt beim Start `api.github.com/.../releases/latest` (nur Tag, Hintergrund-Thread, 6 s) und zeigt eine
+  orange Zeile mit Link zur Download-Seite; `--no-update-check`, unbeaufsichtigte Laeufe (`--exit`) fragen nie.
+- Sandbox-Test v3 (`python fixpack/sandbox_new_test.py formation3`, Zustand per `peek_form.py`), EE und AoC:
+  neue Zufallskarte -> alle 23 Gruppen der Menschen LongLine, 0 Aufrufe von `EEGroup::Read`; Formationsknopf 3108
+  -> Befehls- und Oberflaechen-Gruppe ShortLine und bleiben es (waehrend des Spiels wird `Read` nie aufgerufen);
+  Spielstand laden -> 147 `Read`-Aufrufe, Menschen LongLine, Computer unveraendert ShortLine, Exit-Code 0.
+  Mit per Frida vorgetaeuschter Art 3 im Spielstand: Befehls- und Oberflaechen-Gruppe beide StaggeredLine.
+  AoC-Ladebildschirm: Liste `394` hat keine Vorauswahl -> `cheat/listsel.js {"id":394,"index":0}`, dann Knopf 393.
+- Update-Zeile in der gebauten EXE geprueft (`--pretend-version 0.9` -> "Version 1.0 is available").
+- Veroeffentlicht als Version 1.1: Commit + `git push`, Release `v1.1` (eigenes Tag, damit die Update-Pruefung es meldet).
